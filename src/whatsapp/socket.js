@@ -6,7 +6,8 @@
 
 import makeWASocket, {
   useMultiFileAuthState,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  DisconnectReason
 } from '@whiskeysockets/baileys';
 
 import pino from 'pino';
@@ -73,9 +74,24 @@ export async function startWhatsApp() {
       }
 
       if (connection === 'close') {
+        const statusCode =
+          lastDisconnect?.error?.output?.statusCode;
+
         console.log(
-          '❌ WhatsApp déconnecté'
+          '❌ WhatsApp déconnecté (code',
+          statusCode,
+          ')'
         );
+
+        // Si la session a été explicitement déconnectée (logged out),
+        // reconnecter en boucle ne sert à rien : il faut un nouveau
+        // pairing. On arrête la boucle dans ce cas précis.
+        if (statusCode === DisconnectReason.loggedOut) {
+          console.log(
+            '⚠️ Session déconnectée définitivement. Supprimez data/session et relancez un pairing.'
+          );
+          return;
+        }
 
         setTimeout(() => {
           startWhatsApp();
