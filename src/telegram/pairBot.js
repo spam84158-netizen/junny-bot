@@ -12,6 +12,11 @@ import TelegramBot from 'node-telegram-bot-api';
 import { config } from '../config.js';
 import { requestPairingCode } from '../whatsapp/socket.js';
 
+// Garde-fou : empêche deux demandes de pairing simultanées (par ex.
+// si un message est livré deux fois, ou si une deuxième instance du
+// bot tourne par erreur en parallèle).
+let pairingInProgress = false;
+
 export function startTelegramBridge() {
   if (!config.telegramToken) {
     console.warn('[Telegram] TELEGRAM_BOT_TOKEN manquant — pont Telegram désactivé.');
@@ -43,6 +48,14 @@ export function startTelegramBridge() {
       return;
     }
 
+    if (pairingInProgress) {
+      console.log('[Telegram] Demande de pairing ignorée : une autre est déjà en cours.');
+      await bot.sendMessage(chatId, '⏳ Un code est déjà en cours de génération, patientez quelques secondes puis réessayez.');
+      return;
+    }
+
+    pairingInProgress = true;
+
     try {
       await bot.sendMessage(chatId, '⏳ Génération du code de jumelage...');
       const code = await requestPairingCode(phoneNumber);
@@ -50,6 +63,8 @@ export function startTelegramBridge() {
     } catch (err) {
       console.error('[Telegram] Erreur pairing:', err);
       await bot.sendMessage(chatId, "❌ Impossible de générer le code (le bot est peut-être déjà connecté, ou le numéro est invalide).");
+    } finally {
+      pairingInProgress = false;
     }
   });
 
