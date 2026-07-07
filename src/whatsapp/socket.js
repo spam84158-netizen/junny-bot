@@ -93,6 +93,29 @@ export async function startWhatsApp() {
           return;
         }
 
+        // Cas normal après une saisie RÉUSSIE du code de pairing :
+        // WhatsApp ferme la connexion avec restartRequired (515) et
+        // attend qu'on relance immédiatement le socket pour finaliser
+        // la session authentifiée. Il ne faut PAS attendre ici.
+        if (statusCode === DisconnectReason.restartRequired) {
+          console.log(
+            '🔄 Redémarrage requis après pairing, reconnexion immédiate...'
+          );
+          startWhatsApp();
+          return;
+        }
+
+        // Si aucune session n'est encore enregistrée (on attend que
+        // l'utilisateur saisisse le code de pairing), on NE reconnecte
+        // PAS automatiquement : recréer le socket maintenant invalide
+        // le code déjà affiché et empêche toute liaison réussie.
+        if (!state.creds.registered) {
+          console.log(
+            'ℹ️ Pairing en attente de saisie, pas de reconnexion automatique.'
+          );
+          return;
+        }
+
         setTimeout(() => {
           startWhatsApp();
         }, 5000);
@@ -134,14 +157,6 @@ export async function requestPairingCode(number) {
   if (!sock) {
     throw new Error(
       'WhatsApp non démarré'
-    );
-  }
-
-  // FIX 2a : si la session est déjà enregistrée, redemander un code
-  // n'a pas de sens et peut produire un code invalide.
-  if (sock.authState?.creds?.registered) {
-    throw new Error(
-      'Session déjà enregistrée, code de jumelage inutile'
     );
   }
 
