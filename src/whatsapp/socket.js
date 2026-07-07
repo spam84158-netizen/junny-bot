@@ -11,6 +11,7 @@ import makeWASocket, {
 
 import pino from 'pino';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 import { handleMessage } from './messageHandler.js';
@@ -21,19 +22,24 @@ const __dirname = path.dirname(__filename);
 
 const SESSION_DIR = path.join(__dirname, '../../data/session');
 
-const logger = pino({ level: 'silent' });
+const logger = pino({
+  level: 'silent'
+});
 
 let sock = null;
-let pairingCodeListener = null;
-
-export function setPairingCodeListener(fn) {
-  pairingCodeListener = fn;
-}
 
 export async function startWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  // FIX 1 : si le dossier de session n'existe pas, useMultiFileAuthState
+  // ne peut pas écrire les creds -> la session n'était jamais sauvegardée.
+  if (!fs.existsSync(SESSION_DIR)) {
+    fs.mkdirSync(SESSION_DIR, { recursive: true });
+  }
 
-  const { version } = await fetchLatestBaileysVersion();
+  const { state, saveCreds } =
+    await useMultiFileAuthState(SESSION_DIR);
+
+  const { version } =
+    await fetchLatestBaileysVersion();
 
   sock = makeWASocket({
     version,
@@ -47,41 +53,59 @@ export async function startWhatsApp() {
     ]
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on(
+    'creds.update',
+    saveCreds
+  );
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, pairingCode } = update;
+  sock.ev.on(
+    'connection.update',
+    async (update) => {
+      const {
+        connection,
+        lastDisconnect
+      } = update;
 
-    if (pairingCode && pairingCodeListener) {
-      pairingCodeListener(pairingCode);
+      if (connection === 'open') {
+        console.log(
+          '✅ WhatsApp connecté'
+        );
+      }
+
+      if (connection === 'close') {
+        console.log(
+          '❌ WhatsApp déconnecté'
+        );
+
+        setTimeout(() => {
+          startWhatsApp();
+        }, 5000);
+      }
     }
+  );
 
-    if (connection === 'open') {
-      console.log('✅ WhatsApp connecté');
+  sock.ev.on(
+    'messages.upsert',
+    async ({ messages }) => {
+      const msg = messages[0];
+
+      if (!msg?.message) return;
+
+      await handleMessage(
+        sock,
+        msg
+      );
     }
-
-    if (connection === 'close') {
-      console.log('❌ Connexion fermée');
-
-      setTimeout(() => {
-        startWhatsApp();
-      }, 5000);
-    }
-  });
-
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    const msg = messages[0];
-
-    if (!msg?.message) return;
-
-    await handleMessage(sock, msg);
-  });
+  );
 
   sock.ev.on(
     'group-participants.update',
     async (update) => {
       if (handleGroupParticipantsUpdate) {
-        await handleGroupParticipantsUpdate(sock, update);
+        await handleGroupParticipantsUpdate(
+          sock,
+          update
+        );
       }
     }
   );
@@ -89,15 +113,67 @@ export async function startWhatsApp() {
   return sock;
 }
 
-export function getSocket() {
-  return sock;
-}
+
 export async function requestPairingCode(number) {
   if (!sock) {
-    throw new Error('WhatsApp socket non démarré');
+    throw new Error(
+      'WhatsApp non démarré'
+    );
   }
 
-  const code = await sock.requestPairingCode(number);
+  // FIX 2a : si la session est déjà enregistrée, redemander un code
+  // n'a pas de sens et peut produire un code invalide.
+  if (sock.authState?.creds?.registered) {
+    throw new Error(
+      'Session déjà enregistrée, code de jumelage inutile'
+    );
+  }
+
+  const phone = String(number)
+    .replace(/\D/g, '');
+
+  if (!phone) {
+    throw new Error(
+      'Numéro invalide'
+    );
+  }
+
+  // FIX 2b : attendre que le socket WebSocket interne soit réellement
+  // ouvert avant de demander le code, sinon Baileys génère un code
+  // invalide ou l'appel échoue silencieusement.
+  await waitForSocketOpen();
+
+  const code =
+    await sock.requestPairingCode(phone);
+
+  console.log(
+    '🔑 Code WhatsApp :',
+    code
+  );
 
   return code;
+}
+
+function waitForSocketOpen(timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    // Si déjà ouvert (readyState 1 = OPEN), on continue immédiatement.
+    if (sock?.ws?.socket?.readyState === 1) {
+      resolve();
+      return;
+    }
+
+    const timeout = setTimeout(resolve, timeoutMs);
+
+    const onOpen = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+
+    sock.ws.on('open', onOpen);
+  });
+}
+
+
+export function getSocket() {
+  return sock;
 }
