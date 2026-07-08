@@ -10,12 +10,7 @@
  */
 import TelegramBot from 'node-telegram-bot-api';
 import { config } from '../config.js';
-import { requestPairingCode } from '../whatsapp/socket.js';
-
-// Garde-fou : empêche deux demandes de pairing simultanées (par ex.
-// si un message est livré deux fois, ou si une deuxième instance du
-// bot tourne par erreur en parallèle).
-let pairingInProgress = false;
+import { requestPairingCode, resetSession, getStatus } from '../whatsapp/socket.js';
 
 export function startTelegramBridge() {
   if (!config.telegramToken) {
@@ -41,20 +36,36 @@ export function startTelegramBridge() {
     }
 
     const text = (msg.text || '').trim();
+
+    if (/^status$/i.test(text)) {
+      const s = getStatus();
+      await bot.sendMessage(chatId,
+        `📊 Statut :\n` +
+        `• Socket initialisé : ${s.initialized ? 'oui' : 'non'}\n` +
+        `• Compte lié (registered) : ${s.registered ? 'oui ✅' : 'non'}\n` +
+        `• Prêt pour un nouveau code : ${s.readyForPairing ? 'oui' : 'non'}`
+      );
+      return;
+    }
+
+    if (/^reset$/i.test(text)) {
+      await bot.sendMessage(chatId, '🔄 Réinitialisation de la session en cours...');
+      try {
+        await resetSession();
+        await bot.sendMessage(chatId, '✅ Session effacée et connexion relancée à zéro. Renvoyez votre numéro pour obtenir un nouveau code.\n\n⚠️ Si un jumelage avait déjà abouti avant, allez aussi retirer l\'entrée du bot dans WhatsApp > Paramètres > Appareils liés sur votre téléphone.');
+      } catch (err) {
+        console.error('[Telegram] Erreur reset:', err);
+        await bot.sendMessage(chatId, `❌ Le reset a échoué : ${err.message}`);
+      }
+      return;
+    }
+
     const phoneNumber = text.replace(/\D/g, '');
 
     if (!phoneNumber || phoneNumber.length < 8) {
-      await bot.sendMessage(chatId, "Envoyez votre numéro WhatsApp complet avec l'indicatif, sans le +.\nExemple : 2250160775890");
+      await bot.sendMessage(chatId, "Envoyez votre numéro WhatsApp complet avec l'indicatif, sans le +.\nExemple : 2250160775890\n\nAutres commandes : \"status\" (voir l'état de la connexion), \"reset\" (repartir de zéro si ça bloque).");
       return;
     }
-
-    if (pairingInProgress) {
-      console.log('[Telegram] Demande de pairing ignorée : une autre est déjà en cours.');
-      await bot.sendMessage(chatId, '⏳ Un code est déjà en cours de génération, patientez quelques secondes puis réessayez.');
-      return;
-    }
-
-    pairingInProgress = true;
 
     try {
       await bot.sendMessage(chatId, '⏳ Génération du code de jumelage...');
@@ -62,9 +73,7 @@ export function startTelegramBridge() {
       await bot.sendMessage(chatId, `✅ Code : *${code}*\n\nDans WhatsApp : Paramètres > Appareils liés > Lier un appareil > Lier avec le numéro de téléphone.`, { parse_mode: 'Markdown' });
     } catch (err) {
       console.error('[Telegram] Erreur pairing:', err);
-      await bot.sendMessage(chatId, "❌ Impossible de générer le code (le bot est peut-être déjà connecté, ou le numéro est invalide).");
-    } finally {
-      pairingInProgress = false;
+      await bot.sendMessage(chatId, `❌ ${err.message || "Impossible de générer le code."}`);
     }
   });
 
